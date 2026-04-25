@@ -1,99 +1,194 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+import {MarkdownSubView, MarkdownView, Notice, Plugin, TFile} from 'obsidian';
+import {AutoFoldHeadingSettingTab, AutoFoldHeadingSettings, DEFAULT_SETTINGS} from './settings';
 
-// Remember to rename these classes and interfaces!
-
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
-	}
-
-	onunload() {
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
+/**
+ * Obsidian does not expose heading-fold controls in the public MarkdownSubView type,
+ * but they are available at runtime.
+ *
+ * We keep the unofficial surface in small local interfaces so the rest of the plugin
+ * remains strongly typed and easy to follow.
+ */
+interface FoldRange {
+from: number;
+to: number;
 }
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
+interface FoldState {
+folds: FoldRange[];
+lines: number;
+}
 
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
+interface FoldCapableMarkdownSubView extends MarkdownSubView {
+getFoldInfo?: () => FoldState | null;
+applyFoldInfo?: (foldInfo: FoldState) => void;
+}
 
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
+interface FoldCapableMarkdownView extends MarkdownView {
+onMarkdownFold?: () => void;
+}
+
+/**
+ * Main plugin class.
+ *
+ * Lifecycle summary:
+ * 1. Load persisted settings.
+ * 2. Register the settings tab.
+ * 3. Listen for `file-open` workspace events.
+ * 4. Whenever a note opens in a markdown editor, fold headings whose text matches
+ *    the user's regex.
+ */
+export default class AutoFolderPlugin extends Plugin {
+settings: AutoFoldHeadingSettings;
+private hasShownInvalidRegexNotice = false;
+
+async onload(): Promise<void> {
+await this.loadSettings();
+this.addSettingTab(new AutoFoldHeadingSettingTab(this.app, this));
+
+this.registerEvent(this.app.workspace.on('file-open', (file) => {
+void this.handleFileOpen(file);
+}));
+
+// Also handle the currently open note when Obsidian finishes restoring the UI.
+this.app.workspace.onLayoutReady(() => {
+const activeFile = this.app.workspace.getActiveFile();
+if (activeFile) {
+void this.handleFileOpen(activeFile);
+}
+});
+}
+
+async loadSettings(): Promise<void> {
+this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<AutoFoldHeadingSettings>);
+}
+
+async saveSettings(): Promise<void> {
+await this.saveData(this.settings);
+}
+
+/**
+ * Used by the settings tab to provide immediate feedback when the user types a regex.
+ */
+getRegexValidationError(rawPattern: string): string | null {
+const trimmedPattern = rawPattern.trim();
+if (trimmedPattern.length === 0) {
+return null;
+}
+
+try {
+AutoFolderPlugin.buildRegex(trimmedPattern);
+return null;
+} catch (error) {
+return error instanceof Error ? error.message : 'Invalid regular expression';
+}
+}
+
+/**
+ * Called whenever the active file changes.
+ *
+ * We only fold when the active view is a markdown source editor and it matches the
+ * newly opened file.
+ */
+private async handleFileOpen(file: TFile | null): Promise<void> {
+if (!file) {
+return;
+}
+
+const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+if (!markdownView || markdownView.file !== file) {
+return;
+}
+
+this.foldMatchingHeadings(markdownView, file);
+}
+
+/**
+ * Core behavior:
+ * - read heading metadata for the file
+ * - filter headings by user regex
+ * - merge matching heading folds with already existing folds
+ * - apply fold state back into the active editor mode
+ */
+private foldMatchingHeadings(view: MarkdownView, file: TFile): void {
+if (view.getMode() !== 'source') {
+return;
+}
+
+const headingRegex = this.getCompiledHeadingRegex();
+if (!headingRegex) {
+return;
+}
+
+const headings = this.app.metadataCache.getFileCache(file)?.headings ?? [];
+if (headings.length === 0) {
+return;
+}
+
+const mode = view.currentMode as FoldCapableMarkdownSubView;
+if (!mode.applyFoldInfo) {
+return;
+}
+
+const existingFolds = mode.getFoldInfo?.()?.folds ?? [];
+const foldedLines = new Set(existingFolds.map((fold) => fold.from));
+
+const additionalFolds: FoldRange[] = headings
+.filter((heading) => headingRegex.test(heading.heading) && !foldedLines.has(heading.position.start.line))
+.map((heading) => ({
+from: heading.position.start.line,
+to: heading.position.start.line + 1,
+}));
+
+if (additionalFolds.length === 0) {
+return;
+}
+
+mode.applyFoldInfo({
+folds: [...existingFolds, ...additionalFolds],
+lines: view.editor.lineCount(),
+});
+
+(view as FoldCapableMarkdownView).onMarkdownFold?.();
+}
+
+/**
+ * Returns `null` when folding should be skipped (empty regex or invalid regex).
+ *
+ * Supported input styles:
+ * - plain pattern: `^todo$`
+ * - slash form with flags: `/^todo$/i`
+ */
+private getCompiledHeadingRegex(): RegExp | null {
+const trimmedPattern = this.settings.headingRegex.trim();
+if (trimmedPattern.length === 0) {
+this.hasShownInvalidRegexNotice = false;
+return null;
+}
+
+try {
+const regex = AutoFolderPlugin.buildRegex(trimmedPattern);
+this.hasShownInvalidRegexNotice = false;
+return regex;
+} catch (error) {
+if (!this.hasShownInvalidRegexNotice) {
+const errorText = error instanceof Error ? error.message : 'Invalid regular expression';
+new Notice(`Auto Folder: invalid heading regex (${errorText}).`);
+this.hasShownInvalidRegexNotice = true;
+}
+return null;
+}
+}
+
+private static buildRegex(rawPattern: string): RegExp {
+if (rawPattern.startsWith('/')) {
+const lastSlashIndex = rawPattern.lastIndexOf('/');
+if (lastSlashIndex > 0) {
+const pattern = rawPattern.slice(1, lastSlashIndex);
+const flags = rawPattern.slice(lastSlashIndex + 1);
+return new RegExp(pattern, flags);
+}
+}
+
+return new RegExp(rawPattern);
+}
 }
