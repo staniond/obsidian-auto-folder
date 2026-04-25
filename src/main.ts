@@ -37,7 +37,7 @@ onMarkdownFold?: () => void;
  * 4. Whenever a note opens in a markdown editor, fold headings whose text matches
  *    the user's regex.
  */
-export default class AutoFolderPlugin extends Plugin {
+export default class AutoFoldHeadingPlugin extends Plugin {
 settings: AutoFoldHeadingSettings;
 private hasShownInvalidRegexNotice = false;
 
@@ -69,14 +69,14 @@ await this.saveData(this.settings);
 /**
  * Used by the settings tab to provide immediate feedback when the user types a regex.
  */
-getRegexValidationError(rawPattern: string): string | null {
+	getRegexValidationError(rawPattern: string): string | null {
 const trimmedPattern = rawPattern.trim();
 if (trimmedPattern.length === 0) {
 return null;
 }
 
 try {
-AutoFolderPlugin.buildRegex(trimmedPattern);
+			AutoFoldHeadingPlugin.buildRegex(trimmedPattern);
 return null;
 } catch (error) {
 return error instanceof Error ? error.message : 'Invalid regular expression';
@@ -166,7 +166,7 @@ return null;
 }
 
 try {
-const regex = AutoFolderPlugin.buildRegex(trimmedPattern);
+			const regex = AutoFoldHeadingPlugin.buildRegex(trimmedPattern);
 this.hasShownInvalidRegexNotice = false;
 return regex;
 } catch (error) {

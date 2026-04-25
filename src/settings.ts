@@ -1,5 +1,5 @@
 import {App, PluginSettingTab, Setting} from 'obsidian';
-import AutoFolderPlugin from './main';
+import AutoFoldHeadingPlugin from './main';
 
 export interface AutoFoldHeadingSettings {
 headingRegex: string;
@@ -16,9 +16,9 @@ headingRegex: '',
  * be folded when a note opens.
  */
 export class AutoFoldHeadingSettingTab extends PluginSettingTab {
-plugin: AutoFolderPlugin;
+plugin: AutoFoldHeadingPlugin;
 
-constructor(app: App, plugin: AutoFolderPlugin) {
+constructor(app: App, plugin: AutoFoldHeadingPlugin) {
 super(app, plugin);
 this.plugin = plugin;
 }
@@ -27,13 +27,13 @@ display(): void {
 const {containerEl} = this;
 containerEl.empty();
 
-		new Setting(containerEl)
-			.setName('Heading regex')
-			.setDesc('Fold headings whose text matches this JavaScript regex when a note opens. Leave blank to disable. Supports both ^pattern$ and /pattern/flags.')
-			.addText((text) => {
-				text
-					.setPlaceholder('Enter a heading regex')
-					.setValue(this.plugin.settings.headingRegex)
+new Setting(containerEl)
+.setName('Heading regex')
+.setDesc('Fold headings whose text matches this JavaScript regex when a note opens. Leave blank to disable. Supports plain patterns (for example ^pattern$) and slash notation with flags (for example /pattern/flags).')
+.addText((text) => {
+text
+.setPlaceholder('Enter a heading regex')
+.setValue(this.plugin.settings.headingRegex)
 .onChange(async (value) => {
 this.plugin.settings.headingRegex = value;
 await this.plugin.saveSettings();
