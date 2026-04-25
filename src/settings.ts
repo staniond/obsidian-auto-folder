@@ -27,13 +27,13 @@ display(): void {
 const {containerEl} = this;
 containerEl.empty();
 
-new Setting(containerEl)
-.setName('Heading regex')
-.setDesc('Fold headings whose text matches this JavaScript regex when a note opens. Leave blank to disable. Supports both ^pattern$ and /pattern/flags.')
-.addText((text) => {
-text
-.setPlaceholder('^(Draft|Archive)$')
-.setValue(this.plugin.settings.headingRegex)
+		new Setting(containerEl)
+			.setName('Heading regex')
+			.setDesc('Fold headings whose text matches this JavaScript regex when a note opens. Leave blank to disable. Supports both ^pattern$ and /pattern/flags.')
+			.addText((text) => {
+				text
+					.setPlaceholder('Enter a heading regex')
+					.setValue(this.plugin.settings.headingRegex)
 .onChange(async (value) => {
 this.plugin.settings.headingRegex = value;
 await this.plugin.saveSettings();
