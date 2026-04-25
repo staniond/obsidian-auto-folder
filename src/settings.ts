@@ -1,36 +1,46 @@
-import {App, PluginSettingTab, Setting} from "obsidian";
-import MyPlugin from "./main";
+import {App, PluginSettingTab, Setting} from 'obsidian';
+import AutoFoldHeadingPlugin from './main';
 
-export interface MyPluginSettings {
-	mySetting: string;
+export interface AutoFoldHeadingSettings {
+headingRegex: string;
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+export const DEFAULT_SETTINGS: AutoFoldHeadingSettings = {
+headingRegex: '',
+};
+
+/**
+ * Settings UI for the plugin.
+ *
+ * This page exposes one value: a regex used to select which headings should
+ * be folded when a note opens.
+ */
+export class AutoFoldHeadingSettingTab extends PluginSettingTab {
+plugin: AutoFoldHeadingPlugin;
+
+constructor(app: App, plugin: AutoFoldHeadingPlugin) {
+super(app, plugin);
+this.plugin = plugin;
 }
 
-export class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+display(): void {
+const {containerEl} = this;
+containerEl.empty();
 
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
+new Setting(containerEl)
+.setName('Heading regex')
+.setDesc('Fold headings whose text matches this JavaScript regex when a note opens. Leave blank to disable. Supports plain patterns (for example ^pattern$) and slash notation with flags (for example /pattern/flags).')
+.addText((text) => {
+text
+.setPlaceholder('Enter a heading regex')
+.setValue(this.plugin.settings.headingRegex)
+.onChange(async (value) => {
+this.plugin.settings.headingRegex = value;
+await this.plugin.saveSettings();
 
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName('Settings #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+const validationError = this.plugin.getRegexValidationError(value);
+text.inputEl.setCustomValidity(validationError ?? '');
+});
+});
+}
 }
