@@ -9,22 +9,22 @@ import {AutoFoldHeadingSettingTab, AutoFoldHeadingSettings, DEFAULT_SETTINGS} fr
  * remains strongly typed and easy to follow.
  */
 interface FoldRange {
-from: number;
-to: number;
+	from: number;
+	to: number;
 }
 
 interface FoldState {
-folds: FoldRange[];
-lines: number;
+	folds: FoldRange[];
+	lines: number;
 }
 
 interface FoldCapableMarkdownSubView extends MarkdownSubView {
-getFoldInfo?: () => FoldState | null;
-applyFoldInfo?: (foldInfo: FoldState) => void;
+	getFoldInfo?: () => FoldState | null;
+	applyFoldInfo?: (foldInfo: FoldState) => void;
 }
 
 interface FoldCapableMarkdownView extends MarkdownView {
-onMarkdownFold?: () => void;
+	onMarkdownFold?: () => void;
 }
 
 /**
@@ -38,157 +38,168 @@ onMarkdownFold?: () => void;
  *    the user's regex.
  */
 export default class AutoFoldHeadingPlugin extends Plugin {
-settings: AutoFoldHeadingSettings;
-private hasShownInvalidRegexNotice = false;
+	settings!: AutoFoldHeadingSettings;
+	compiledHeadingRegex: RegExp | null = null;
+	private pendingInitialFoldPath: string | null = null;
+	private hasShownInvalidRegexNotice = false;
 
-async onload(): Promise<void> {
-await this.loadSettings();
-this.addSettingTab(new AutoFoldHeadingSettingTab(this.app, this));
+	async onload(): Promise<void> {
+		await this.loadSettings();
+		this.updateCompiledRegex();
+		this.addSettingTab(new AutoFoldHeadingSettingTab(this.app, this));
 
-this.registerEvent(this.app.workspace.on('file-open', (file) => {
-void this.handleFileOpen(file);
-}));
+		this.registerEvent(this.app.workspace.on('file-open', (file) => {
+			void this.handleFileOpen(file);
+		}));
 
-// Also handle the currently open note when Obsidian finishes restoring the UI.
-this.app.workspace.onLayoutReady(() => {
-const activeFile = this.app.workspace.getActiveFile();
-if (activeFile) {
-void this.handleFileOpen(activeFile);
-}
-});
-}
+		// Folding relies on metadata that may not be ready at the time the file-open event fires,
+		// so we also listen for metadata changes and fold if the changed file matches
+		// the most recently opened file.
+		this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+			if (this.pendingInitialFoldPath === file.path) {
+				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (markdownView && markdownView.file === file) {
+					if (this.foldMatchingHeadings(markdownView, file)) {
+						this.pendingInitialFoldPath = null;
+					}
+				}
+			}
+		}));
 
-async loadSettings(): Promise<void> {
-this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<AutoFoldHeadingSettings>);
-}
+		// Also handle the currently open note when Obsidian finishes restoring the UI.
+		this.app.workspace.onLayoutReady(() => {
+			const activeFile = this.app.workspace.getActiveFile();
+			if (activeFile) {
+				void this.handleFileOpen(activeFile);
+			}
+		});
+	}
 
-async saveSettings(): Promise<void> {
-await this.saveData(this.settings);
-}
+	async loadSettings(): Promise<void> {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<AutoFoldHeadingSettings>);
+	}
 
-/**
- * Used by the settings tab to provide immediate feedback when the user types a regex.
- */
-	getRegexValidationError(rawPattern: string): string | null {
-const trimmedPattern = rawPattern.trim();
-if (trimmedPattern.length === 0) {
-return null;
-}
+	async saveSettings(): Promise<void> {
+		await this.saveData(this.settings);
+	}
 
-try {
-			AutoFoldHeadingPlugin.buildRegex(trimmedPattern);
-return null;
-} catch (error) {
-return error instanceof Error ? error.message : 'Invalid regular expression';
-}
-}
+	/**
+	 * Called whenever the active file changes.
+	 *
+	 * We only fold when the active view is a markdown source editor and it matches the
+	 * newly opened file.
+	 */
+	private async handleFileOpen(file: TFile | null): Promise<void> {
+		if (!file) {
+			return;
+		}
 
-/**
- * Called whenever the active file changes.
- *
- * We only fold when the active view is a markdown source editor and it matches the
- * newly opened file.
- */
-private async handleFileOpen(file: TFile | null): Promise<void> {
-if (!file) {
-return;
-}
+		const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (!markdownView || markdownView.file !== file) {
+			return;
+		}
 
-const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-if (!markdownView || markdownView.file !== file) {
-return;
-}
+		if (this.foldMatchingHeadings(markdownView, file)) {
+			this.pendingInitialFoldPath = null;
+		} else {
+			this.pendingInitialFoldPath = file.path;
+		}
+	}
 
-this.foldMatchingHeadings(markdownView, file);
-}
+	/**
+	 * Core behavior:
+	 * - read heading metadata for the file
+	 * - filter headings by user regex
+	 * - merge matching heading folds with already existing folds
+	 * - apply fold state back into the active editor mode
+	 *
+	 * Returns true if folding was completely resolved (or ignored), or false if metadata isn't ready.
+	 */
+	private foldMatchingHeadings(view: MarkdownView, file: TFile): boolean {
+		const headingRegex = this.compiledHeadingRegex;
+		if (!headingRegex) {
+			return true;
+		}
 
-/**
- * Core behavior:
- * - read heading metadata for the file
- * - filter headings by user regex
- * - merge matching heading folds with already existing folds
- * - apply fold state back into the active editor mode
- */
-private foldMatchingHeadings(view: MarkdownView, file: TFile): void {
-if (view.getMode() !== 'source') {
-return;
-}
+		const cache = this.app.metadataCache.getFileCache(file);
+		if (!cache) {
+			return false; // Metadata not yet parsed for this file
+		}
 
-const headingRegex = this.getCompiledHeadingRegex();
-if (!headingRegex) {
-return;
-}
+		const headings = cache.headings ?? [];
+		if (headings.length === 0) {
+			return true;
+		}
 
-const headings = this.app.metadataCache.getFileCache(file)?.headings ?? [];
-if (headings.length === 0) {
-return;
-}
+		const mode = view.currentMode as FoldCapableMarkdownSubView;
+		if (typeof mode.applyFoldInfo !== 'function' || typeof mode.getFoldInfo !== 'function') {
+			console.error("obsidian-auto-fold: Folding API changed?");
+			return true;
+		}
 
-const mode = view.currentMode as FoldCapableMarkdownSubView;
-if (!mode.applyFoldInfo) {
-return;
-}
+		const existingFolds = mode.getFoldInfo()?.folds ?? [];
+		const foldedLines = new Set(existingFolds.map((fold) => fold.from));
 
-const existingFolds = mode.getFoldInfo?.()?.folds ?? [];
-const foldedLines = new Set(existingFolds.map((fold) => fold.from));
+		const additionalFolds: FoldRange[] = headings
+			.filter((heading) => headingRegex.test(heading.heading) && !foldedLines.has(heading.position.start.line))
+			.map((heading) => ({
+				from: heading.position.start.line,
+				to: heading.position.start.line + 1,
+			}));
 
-const additionalFolds: FoldRange[] = headings
-.filter((heading) => headingRegex.test(heading.heading) && !foldedLines.has(heading.position.start.line))
-.map((heading) => ({
-from: heading.position.start.line,
-to: heading.position.start.line + 1,
-}));
+		if (additionalFolds.length === 0) {
+			return true;
+		}
 
-if (additionalFolds.length === 0) {
-return;
-}
+		mode.applyFoldInfo({
+			folds: [...existingFolds, ...additionalFolds],
+			lines: view.editor.lineCount(),
+		});
 
-mode.applyFoldInfo({
-folds: [...existingFolds, ...additionalFolds],
-lines: view.editor.lineCount(),
-});
+		(view as FoldCapableMarkdownView).onMarkdownFold?.();
+		return true;
+	}
 
-(view as FoldCapableMarkdownView).onMarkdownFold?.();
-}
+	/**
+	 * Updates the cached compiled regular expression.
+	 *
+	 * Supported input styles:
+	 * - plain pattern: `^todo$`
+	 * - slash form with flags: `/^todo$/i`
+	 */
+	updateCompiledRegex(showNotice: boolean = true): string | null {
+		const trimmedPattern = this.settings.headingRegex.trim();
+		if (trimmedPattern.length === 0) {
+			this.hasShownInvalidRegexNotice = false;
+			this.compiledHeadingRegex = null;
+			return null;
+		}
 
-/**
- * Returns `null` when folding should be skipped (empty regex or invalid regex).
- *
- * Supported input styles:
- * - plain pattern: `^todo$`
- * - slash form with flags: `/^todo$/i`
- */
-private getCompiledHeadingRegex(): RegExp | null {
-const trimmedPattern = this.settings.headingRegex.trim();
-if (trimmedPattern.length === 0) {
-this.hasShownInvalidRegexNotice = false;
-return null;
-}
+		try {
+			this.compiledHeadingRegex = AutoFoldHeadingPlugin.buildRegex(trimmedPattern);
+			this.hasShownInvalidRegexNotice = false;
+			return null;
+		} catch (error) {
+			const errorText = error instanceof Error ? error.message : 'Invalid regular expression.';
+			if (showNotice && !this.hasShownInvalidRegexNotice) {
+				new Notice(`Auto Folder: invalid heading regex (${errorText}).`);
+				this.hasShownInvalidRegexNotice = true;
+			}
+			this.compiledHeadingRegex = null;
+			return errorText;
+		}
+	}
 
-try {
-			const regex = AutoFoldHeadingPlugin.buildRegex(trimmedPattern);
-this.hasShownInvalidRegexNotice = false;
-return regex;
-} catch (error) {
-if (!this.hasShownInvalidRegexNotice) {
-const errorText = error instanceof Error ? error.message : 'Invalid regular expression';
-new Notice(`Auto Folder: invalid heading regex (${errorText}).`);
-this.hasShownInvalidRegexNotice = true;
-}
-return null;
-}
-}
-
-private static buildRegex(rawPattern: string): RegExp {
-if (rawPattern.startsWith('/')) {
-const lastSlashIndex = rawPattern.lastIndexOf('/');
-if (lastSlashIndex > 0) {
-const pattern = rawPattern.slice(1, lastSlashIndex);
-const flags = rawPattern.slice(lastSlashIndex + 1);
-return new RegExp(pattern, flags);
-}
-}
-
-return new RegExp(rawPattern);
-}
+	private static buildRegex(rawPattern: string): RegExp {
+		// support slash notation with flags (pattern/flags) https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Regular_expressions#advanced_searching_with_flags
+		if (rawPattern.startsWith('/')) {
+			const lastSlashIndex = rawPattern.lastIndexOf('/');
+			if (lastSlashIndex > 0) {
+				const pattern = rawPattern.slice(1, lastSlashIndex);
+				const flags = rawPattern.slice(lastSlashIndex + 1);
+				return new RegExp(pattern, flags);
+			}
+		}
+		return new RegExp(rawPattern);
+	}
 }
