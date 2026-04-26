@@ -3,10 +3,12 @@ import AutoFoldHeadingPlugin from './main';
 
 export interface AutoFoldHeadingSettings {
     headingRegex: string;
+    delayMs: number;
 }
 
 export const DEFAULT_SETTINGS: AutoFoldHeadingSettings = {
     headingRegex: '',
+    delayMs: 500,
 };
 
 /**
@@ -46,6 +48,26 @@ export class AutoFoldHeadingSettingTab extends PluginSettingTab {
                     text.inputEl.reportValidity();
 
                     saveSettings();
+                });
+            });
+
+        new Setting(containerEl)
+            .setName('Fold delay (ms)')
+            .setDesc('Delay in milliseconds before applying folds when opening a file. This gives Obsidian time to restore previously saved folds first.')
+            .addText((text) => {
+                text
+                .setPlaceholder('500')
+                .setValue(this.plugin.settings.delayMs.toString())
+                .onChange((value) => {
+                    const parsed = parseInt(value, 10);
+                    if (isNaN(parsed) || parsed < 0) {
+                        text.inputEl.setCustomValidity('Please enter a valid positive number.');
+                    } else {
+                        text.inputEl.setCustomValidity('');
+                        this.plugin.settings.delayMs = parsed;
+                        saveSettings();
+                    }
+                    text.inputEl.reportValidity();
                 });
             });
     }

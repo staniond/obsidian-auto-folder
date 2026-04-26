@@ -14,7 +14,9 @@ If you have specific sections in your notes that you always want collapsed by de
 
 1. Install and enable the plugin in your Obsidian settings.
 2. Go to **Settings -> Obsidian Auto Folder**.
-3. Enter a Regular Expression into the **Heading regex** field.
+3. Configure your settings:
+   - **Heading regex**: Enter a Regular Expression to define which headings to fold.
+   - **Fold delay (ms)**: Sets the delay before the plugin applies the folds. This ensures Obsidian has enough time to restore your previously saved manual folds before the plugin runs. You may increase this if your saved folds get overwritten.
 
 ### Regex Examples
 

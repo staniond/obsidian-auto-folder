@@ -1,5 +1,5 @@
-import {MarkdownSubView, MarkdownView, Notice, Plugin, TFile} from 'obsidian';
-import {AutoFoldHeadingSettingTab, AutoFoldHeadingSettings, DEFAULT_SETTINGS} from './settings';
+import { MarkdownSubView, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { AutoFoldHeadingSettingTab, AutoFoldHeadingSettings, DEFAULT_SETTINGS } from './settings';
 
 /**
  * Obsidian does not expose heading-fold controls in the public MarkdownSubView type,
@@ -42,6 +42,7 @@ export default class AutoFoldHeadingPlugin extends Plugin {
 	compiledHeadingRegex: RegExp | null = null;
 	private pendingInitialFoldPath: string | null = null;
 	private hasShownInvalidRegexNotice = false;
+	private knownViews = new WeakMap<MarkdownView, TFile>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -61,6 +62,7 @@ export default class AutoFoldHeadingPlugin extends Plugin {
 				if (markdownView && markdownView.file === file) {
 					if (this.foldMatchingHeadings(markdownView, file)) {
 						this.pendingInitialFoldPath = null;
+						this.knownViews.set(markdownView, file);
 					}
 				}
 			}
@@ -77,6 +79,11 @@ export default class AutoFoldHeadingPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<AutoFoldHeadingSettings>);
+
+		// Sanitize delayMs in case data.json was manually edited with an invalid value
+		if (typeof this.settings.delayMs !== 'number' || isNaN(this.settings.delayMs) || this.settings.delayMs < 0) {
+			this.settings.delayMs = DEFAULT_SETTINGS.delayMs;
+		}
 	}
 
 	async saveSettings(): Promise<void> {
@@ -99,11 +106,22 @@ export default class AutoFoldHeadingPlugin extends Plugin {
 			return;
 		}
 
-		if (this.foldMatchingHeadings(markdownView, file)) {
-			this.pendingInitialFoldPath = null;
-		} else {
-			this.pendingInitialFoldPath = file.path;
+		// If this exact view has already been initialized with this file,
+		// its folds are already restored. We can fold immediately.
+		if (this.knownViews.get(markdownView) === file) {
+			this.foldMatchingHeadings(markdownView, file);
+			return;
 		}
+
+		// new tab opened - wait for Obsidian to restore previously saved folds before we apply our own
+		window.setTimeout(() => {
+			if (this.foldMatchingHeadings(markdownView, file)) {
+				this.pendingInitialFoldPath = null;
+				this.knownViews.set(markdownView, file);
+			} else {
+				this.pendingInitialFoldPath = file.path;
+			}
+		}, this.settings.delayMs);
 	}
 
 	/**
